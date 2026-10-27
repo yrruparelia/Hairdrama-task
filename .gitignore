@@ -1,0 +1,30 @@
+# Git — files to never commit
+# ─────────────────────────────
+
+# Environment secrets
+.env
+.env.local
+.env.production
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Node
+node_modules/
+.next/
+out/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
