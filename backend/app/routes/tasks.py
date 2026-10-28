@@ -22,6 +22,8 @@ JWT Auth:
   from the Authorization header.
 """
 
+
+import jwt
 from flask import Blueprint, jsonify, request, current_app
 from app.services.supabase_client import get_supabase_client
 from app.services.email_service import (
@@ -29,7 +31,7 @@ from app.services.email_service import (
     notify_task_completed,
     notify_task_reassigned,
 )
-import jwt
+
 
 tasks_bp = Blueprint("tasks", __name__)
 
