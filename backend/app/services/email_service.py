@@ -54,9 +54,13 @@ def _send_email(to_address: str, subject: str, html_body: str) -> None:
 
     # smtplib.SMTP_SSL creates an encrypted connection from the start.
     # Port 465 is the standard SSL port for Gmail.
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(sender, password)
-        smtp.sendmail(sender, to_address, msg.as_string())
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as smtp:
+            smtp.login(sender, password)
+            smtp.sendmail(sender, to_address, msg.as_string())
+    except (OSError, smtplib.SMTPException) as error:
+        current_app.logger.warning("Email delivery failed: %s", error)
+        return
 
     current_app.logger.info(f"Email sent to {to_address}: {subject}")
 

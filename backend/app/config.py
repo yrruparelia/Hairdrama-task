@@ -17,6 +17,16 @@ from dotenv import load_dotenv
 # env vars are set directly in the platform dashboard.
 load_dotenv()
 
+# OAuthlib rejects plain HTTP by default. Allow it only for the local
+# development callback; deployed environments must use HTTPS.
+if (
+    os.getenv("FLASK_ENV", "development") == "development"
+    and os.getenv("GOOGLE_REDIRECT_URI", "").startswith(
+        ("http://localhost:", "http://127.0.0.1:")
+    )
+):
+    os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
+
 
 class Config:
     # ── Flask core ─────────────────────────────────────────────────────────

@@ -24,7 +24,7 @@ Why JWT instead of Flask sessions?
   sent in the Authorization header, which works across origins.
 """
 
-from flask import Blueprint, redirect, request, jsonify, current_app
+from flask import Blueprint, redirect, request, jsonify, current_app, session
 from google_auth_oauthlib.flow import Flow
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
@@ -99,7 +99,8 @@ def google_login():
         include_granted_scopes="true",
         prompt="select_account",  # always show account picker
     )
-    # NOTE: In production, store `state` in a secure cookie to verify in callback.
+    session["oauth_state"] = state
+    session["oauth_code_verifier"] = flow.code_verifier
     return redirect(authorization_url)
 
 
@@ -112,6 +113,8 @@ def google_callback():
     """
     # Exchange authorization code for tokens
     flow = _build_flow()
+    flow.code_verifier = session.pop("oauth_code_verifier", None)
+    session.pop("oauth_state", None)
     flow.fetch_token(authorization_response=request.url)
 
     credentials = flow.credentials

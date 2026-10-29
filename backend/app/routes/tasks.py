@@ -24,6 +24,7 @@ JWT Auth:
 
 
 import jwt
+import datetime
 from flask import Blueprint, jsonify, request, current_app
 from app.services.supabase_client import get_supabase_client
 from app.services.email_service import (
@@ -116,7 +117,12 @@ def list_tasks():
         query = query.eq("assigned_to", assigned_to)
 
     result = query.execute()
-    return jsonify(result.data), 200
+    visible_tasks = [
+        task for task in result.data
+        if task.get("created_by") == payload["sub"]
+        or task.get("assigned_to") == payload["sub"]
+    ]
+    return jsonify(visible_tasks), 200
 
 
 # ── POST /api/tasks/ ──────────────────────────────────────────────────────────
@@ -135,6 +141,15 @@ def create_task():
     if not data or not data.get("title"):
         return jsonify({"error": "title is required"}), 400
 
+    due_date = data.get("due_date")
+    if due_date:
+        try:
+            parsed_due_date = datetime.date.fromisoformat(due_date)
+        except (TypeError, ValueError):
+            return jsonify({"error": "due_date must be a valid date"}), 400
+        if parsed_due_date < datetime.date.today():
+            return jsonify({"error": "Due date cannot be earlier than today"}), 400
+
     supabase = get_supabase_client()
     current_user_id = payload["sub"]
 
@@ -142,11 +157,23 @@ def create_task():
         "title": data["title"],
         "description": data.get("description", ""),
         "priority": data.get("priority", "medium"),
-        "due_date": data.get("due_date"),       # can be None
+        "due_date": due_date,                   # can be None
         "assigned_to": data.get("assigned_to"), # can be None
         "created_by": current_user_id,
         "status": "todo",
     }
+
+    assigned_to = new_task["assigned_to"]
+    if assigned_to and assigned_to != current_user_id:
+        assignee_exists = (
+            supabase.table("users")
+            .select("id")
+            .eq("id", assigned_to)
+            .maybe_single()
+            .execute()
+        )
+        if not assignee_exists.data:
+            return jsonify({"error": "Assigned user not found"}), 400
 
     result = supabase.table("tasks").insert(new_task).execute()
     task = result.data[0]
@@ -258,6 +285,21 @@ def update_task(task_id: str):
 
     if not update_data:
         return jsonify({"error": "No valid fields to update"}), 400
+
+    is_delegated = (
+        old_task.get("assigned_to")
+        and old_task.get("assigned_to") != old_task.get("created_by")
+    )
+    if "status" in update_data:
+        can_update_status = (
+            old_task.get("assigned_to") == current_user_id
+            if is_delegated
+            else old_task.get("created_by") == current_user_id
+        )
+        if not can_update_status:
+            return jsonify({
+                "error": "Only the task doer can update the status of an assigned task"
+            }), 403
 
     result = (
         supabase.table("tasks").update(update_data).eq("id", task_id).execute()
