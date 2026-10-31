@@ -76,6 +76,22 @@ def _log_activity(supabase, task_id: str, user_id: str, action_type: str, meta: 
         current_app.logger.error(f"Failed to write activity log: {e}")
 
 
+def _get_task_with_relations(supabase, task_id: str):
+    """Fetch a task in the same shape used by the task list endpoint."""
+    result = (
+        supabase.table("tasks")
+        .select(
+            "*, "
+            "creator:created_by(id, name, email, avatar_url), "
+            "assignee:assigned_to(id, name, email, avatar_url)"
+        )
+        .eq("id", task_id)
+        .single()
+        .execute()
+    )
+    return result.data
+
+
 # ── GET /api/tasks/ ───────────────────────────────────────────────────────────
 @tasks_bp.get("/")
 def list_tasks():
@@ -177,6 +193,7 @@ def create_task():
 
     result = supabase.table("tasks").insert(new_task).execute()
     task = result.data[0]
+    task = _get_task_with_relations(supabase, task["id"])
 
     # Log the creation action
     _log_activity(supabase, task["id"], current_user_id, "task_created")
@@ -305,6 +322,7 @@ def update_task(task_id: str):
         supabase.table("tasks").update(update_data).eq("id", task_id).execute()
     )
     updated_task = result.data[0]
+    updated_task = _get_task_with_relations(supabase, updated_task["id"])
 
     # ── Detect and handle status change to 'done' ──────────────────────────
     if update_data.get("status") == "done" and old_task["status"] != "done":

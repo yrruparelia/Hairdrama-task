@@ -40,9 +40,12 @@ export default function Home() {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [darkMode, setDarkMode] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [formMode, setFormMode] = useState<"self" | "delegated">("self");
   const [savingTaskId, setSavingTaskId] = useState<string | null>(null);
+  const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
+  const [taskToRemove, setTaskToRemove] = useState<Task | null>(null);
   const [creatingTask, setCreatingTask] = useState(false);
   const [sortBy, setSortBy] = useState<
     "priority-asc" | "priority-desc" | "due-asc" | "due-desc" | "created-asc" | "created-desc"
@@ -107,6 +110,7 @@ export default function Home() {
     });
 
   useEffect(() => {
+    setDarkMode(window.localStorage.getItem("hairdrama_theme") === "dark");
     const storedToken = window.localStorage.getItem("hairdrama_token") || "";
     setToken(storedToken);
     if (!storedToken) {
@@ -116,6 +120,15 @@ export default function Home() {
 
     void loadData(storedToken);
   }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = darkMode ? "dark" : "light";
+    window.localStorage.setItem("hairdrama_theme", darkMode ? "dark" : "light");
+  }, [darkMode]);
+
+  function toggleTheme() {
+    setDarkMode((current) => !current);
+  }
 
   async function loadData(authToken: string) {
     setLoading(true);
@@ -234,10 +247,33 @@ export default function Home() {
     }
   }
 
+  async function deleteTask(task: Task) {
+    setError("");
+    setDeletingTaskId(task.id);
+    try {
+      await api.delete(`/api/tasks/${task.id}`, {
+        headers: { Authorization: "Bearer " + token },
+      });
+      setTasks((current) => current.filter((item) => item.id !== task.id));
+      setTaskToRemove(null);
+    } catch (requestError) {
+      setError(getErrorMessage(requestError));
+    } finally {
+      setDeletingTaskId(null);
+    }
+  }
+
   function openTaskForm(mode: "self" | "delegated") {
     setFormMode(mode);
     setForm({ title: "", description: "", priority: "medium", due_date: "", assigned_to: "" });
     setShowForm(true);
+  }
+
+  function canUpdateStatus(task: Task) {
+    return (
+      task.assigned_to === currentUserId ||
+      (!task.assigned_to && task.created_by === currentUserId)
+    );
   }
 
   function renderBoard(title: string, boardTasks: Task[]) {
@@ -257,51 +293,96 @@ export default function Home() {
                 : "Tasks you are responsible for completing."}
             </p>
           </div>
-          <span className="count">{boardTasks.length}</span>
+          <span className="section-count">{boardTasks.length} {boardTasks.length === 1 ? "task" : "tasks"}</span>
         </div>
         <div className="board">
           {board.map((column) => (
             <div className="column" key={column.key}>
               <div className="column-heading">
+                <div className={`column-dot ${column.key}`} />
                 <h3>{column.label}</h3>
                 <span className="count">{column.tasks.length}</span>
               </div>
               <div className="task-list">
-                {column.tasks.length === 0 && <p className="empty">No tasks here yet.</p>}
+                {column.tasks.length === 0 && (
+                  <div className="empty">
+                    <span className="empty-icon">✓</span>
+                    <span>No {column.label.toLowerCase()} tasks</span>
+                  </div>
+                )}
                 {column.tasks.map((task) => (
                   <article className="task-card" key={task.id}>
                     <div className="task-card-top">
                       <span className={`priority ${task.priority}`}>{task.priority}</span>
-                      {task.due_date && <time>{task.due_date.slice(0, 10)}</time>}
+                      {task.due_date && (
+                        <time className={getDueState(task) === "overdue" ? "overdue-date" : isDueSoon(task.due_date) ? "due-soon" : ""}>
+                          <span aria-hidden="true">◷</span> {formatDate(task.due_date)}
+                        </time>
+                      )}
                     </div>
                     <h3>{task.title}</h3>
                     {task.description && <p>{task.description}</p>}
-                    <div className="task-people">
-                      <span>Assigner: {task.creator?.name || task.creator?.email || "You"}</span>
-                      <span>Doer: {task.assignee?.name || task.assignee?.email || "Unassigned"}</span>
-                    </div>
+                    {getDueState(task) === "overdue" && (
+                      <div className="overdue-label">
+                        <span aria-hidden="true">!</span>
+                        Overdue by {getOverdueDays(task.due_date as string)}{" "}
+                        {getOverdueDays(task.due_date as string) === 1 ? "day" : "days"}
+                      </div>
+                    )}
+                    {task.assigned_to && task.assigned_to !== task.created_by && (
+                      <div className="task-people">
+                        <div className="person">
+                          {task.creator?.avatar_url ? (
+                            <img className="mini-avatar" src={task.creator.avatar_url} alt="" />
+                          ) : (
+                            <span className="mini-avatar placeholder">{getInitials(task.creator?.name || "You")}</span>
+                          )}
+                          <span><b>From</b> {task.creator?.name || task.creator?.email || "You"}</span>
+                        </div>
+                        <div className="person">
+                          {task.assignee?.avatar_url ? (
+                            <img className="mini-avatar" src={task.assignee.avatar_url} alt="" />
+                          ) : (
+                            <span className="mini-avatar placeholder">{task.assignee ? getInitials(task.assignee.name) : "?"}</span>
+                          )}
+                          <span><b>To</b> {task.assignee?.name || task.assignee?.email || "Unassigned"}</span>
+                        </div>
+                      </div>
+                    )}
                     <div className="task-card-footer">
-                      <span className="assignee">
-                        {task.status === "done" ? "Completed" : "In your workspace"}
+                      <span className={`status-label ${task.status}`}>
+                        <span className="status-dot" />
+                        {task.status === "done" ? "Completed" : task.status === "in_progress" ? "In progress" : "Not started"}
                       </span>
-                      {task.status !== "done" && (
-                        <button
-                          className="complete-button"
-                          disabled={savingTaskId === task.id}
-                          onClick={() =>
-                            updateStatus(
-                              task,
-                              task.status === "todo" ? "in_progress" : "done",
-                            )
-                          }
-                        >
-                          {savingTaskId === task.id
-                            ? "Saving..."
-                            : task.status === "todo"
-                              ? "Start"
-                              : "Complete"}
-                        </button>
-                      )}
+                      <div className="task-actions">
+                        {canUpdateStatus(task) && task.status !== "done" && (
+                          <button
+                            className="complete-button"
+                            disabled={savingTaskId === task.id}
+                            onClick={() =>
+                              updateStatus(
+                                task,
+                                task.status === "todo" ? "in_progress" : "done",
+                              )
+                            }
+                          >
+                            {savingTaskId === task.id
+                              ? "Saving..."
+                              : task.status === "todo"
+                                ? "Start"
+                                : "Complete"}
+                          </button>
+                        )}
+                        {task.status === "done" && task.created_by === currentUserId && (
+                          <button
+                            className="delete-button"
+                            disabled={deletingTaskId === task.id}
+                            onClick={() => setTaskToRemove(task)}
+                          >
+                            {deletingTaskId === task.id ? "Removing..." : "Remove"}
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </article>
                 ))}
@@ -320,22 +401,43 @@ export default function Home() {
   if (!token || !user) {
     return (
       <main className="login-page">
-        <section className="login-card">
-          <div className="brand-mark">H</div>
-          <p className="eyebrow">HAIRDRAMA WORKSPACE</p>
-          <h1>Make work feel simple.</h1>
-          <p className="muted">
-            Organize tasks, assign ownership, and keep everyone updated from
-            one focused board.
-          </p>
-          {error && <p className="error">{error}</p>}
-          <button className="primary-button wide" onClick={login}>
-            Continue with Google
-          </button>
-          <p className="small-text">
-            You will be redirected to Google for secure sign-in.
-          </p>
-        </section>
+        <button className="theme-toggle login-theme-toggle" onClick={toggleTheme} aria-label="Toggle color theme">
+          <span>{darkMode ? "☀" : "☾"}</span>
+          {darkMode ? "Light mode" : "Dark mode"}
+        </button>
+        <div className="login-shell">
+          <section className="login-hero">
+            <div className="hero-orb orb-one" />
+            <div className="hero-orb orb-two" />
+            <p className="eyebrow">A CALMER WAY TO GET WORK DONE</p>
+            <h1>Turn busy work into <em>beautiful progress.</em></h1>
+            <p className="hero-copy">
+              One focused workspace for planning, sharing ownership, and celebrating every finish.
+            </p>
+            <div className="hero-preview">
+              <div className="preview-top"><span className="preview-dot purple" /><span>Today&apos;s focus</span><strong>3 tasks</strong></div>
+              <div className="preview-task"><span className="preview-check">✓</span><div><b>Launch the new campaign</b><small>In progress · High priority</small></div><span className="preview-avatar">A</span></div>
+              <div className="preview-task faded"><span className="preview-check">✓</span><div><b>Review design feedback</b><small>Assigned to you</small></div><span className="preview-avatar blue">M</span></div>
+            </div>
+          </section>
+          <section className="login-card">
+            <div className="login-card-heading">
+              <p className="eyebrow">WELCOME BACK</p>
+              <h2>Let&apos;s make today count.</h2>
+              <p className="muted">Sign in to pick up where you left off.</p>
+            </div>
+            {error && <p className="error">{error}</p>}
+            <button className="google-button" onClick={login}>
+              <span className="google-g">G</span>
+              Continue with Google
+              <span className="button-arrow">→</span>
+            </button>
+            <p className="small-text">Secure sign-in powered by Google</p>
+            <div className="login-perks">
+              <span>✦ Clear ownership</span><span>✦ Shared momentum</span>
+            </div>
+          </section>
+        </div>
       </main>
     );
   }
@@ -353,9 +455,15 @@ export default function Home() {
           ) : (
             <div className="avatar placeholder">{user.name?.[0] || "U"}</div>
           )}
-          <span>{user.name || user.email}</span>
+          <div className="account-copy">
+            <strong>{user.name || user.email}</strong>
+            <span>Workspace member</span>
+          </div>
           <button className="text-button" onClick={logout}>
             Log out
+          </button>
+          <button className="theme-toggle" onClick={toggleTheme} aria-label="Toggle color theme">
+            <span>{darkMode ? "☀" : "☾"}</span>
           </button>
         </div>
       </header>
@@ -365,7 +473,7 @@ export default function Home() {
           <div>
             <p className="eyebrow">YOUR WORKSPACE</p>
             <h1>Task board</h1>
-            <p className="muted">Plan clearly. Finish confidently.</p>
+            <p className="muted">A clear view of what needs your attention.</p>
           </div>
           <div className="heading-actions">
             <button className="secondary-button" onClick={() => openTaskForm("self")}>
@@ -379,8 +487,28 @@ export default function Home() {
 
         {error && <p className="error banner">{error}</p>}
 
+        <div className="overview">
+          <div className="overview-card">
+            <span className="overview-icon purple">◫</span>
+            <div><strong>{tasks.length}</strong><span>Total tasks</span></div>
+          </div>
+          <div className="overview-card">
+            <span className="overview-icon amber">◌</span>
+            <div><strong>{tasks.filter((task) => task.status !== "done").length}</strong><span>Open tasks</span></div>
+          </div>
+          <div className="overview-card">
+            <span className="overview-icon green">✓</span>
+            <div><strong>{tasks.filter((task) => task.status === "done").length}</strong><span>Completed</span></div>
+          </div>
+          <div className="overview-card">
+            <span className="overview-icon blue">↗</span>
+            <div><strong>{assignedToMe.length}</strong><span>Assigned to you</span></div>
+          </div>
+        </div>
+
         <div className="sort-toolbar">
-          <label htmlFor="task-sort">Sort tasks</label>
+          <span className="sort-label">View options</span>
+          <label htmlFor="task-sort">Sort by</label>
           <select
             id="task-sort"
             value={sortBy}
@@ -496,6 +624,30 @@ export default function Home() {
         {renderBoard("Assigned to others", delegatedTasks)}
         {assignedToMe.length > 0 && renderBoard("Assigned to me", assignedToMe)}
       </section>
+      {taskToRemove && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="remove-task-title">
+            <div className="confirm-icon">!</div>
+            <p className="eyebrow">REMOVE COMPLETED TASK</p>
+            <h2 id="remove-task-title">Remove this task?</h2>
+            <p className="muted">
+              <strong>{taskToRemove.title}</strong> will be removed from your workspace. This action cannot be undone.
+            </p>
+            <div className="confirm-actions">
+              <button className="secondary-button" onClick={() => setTaskToRemove(null)}>
+                Keep task
+              </button>
+              <button
+                className="delete-button confirm-delete"
+                disabled={deletingTaskId === taskToRemove.id}
+                onClick={() => deleteTask(taskToRemove)}
+              >
+                {deletingTaskId === taskToRemove.id ? "Removing..." : "Yes, remove it"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }
@@ -513,4 +665,46 @@ function getToday() {
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const day = String(now.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(value));
+}
+
+function isDueSoon(value: string) {
+  const dueDate = new Date(value);
+  const today = new Date();
+  const difference = dueDate.getTime() - today.setHours(0, 0, 0, 0);
+  return difference >= 0 && difference <= 1000 * 60 * 60 * 24 * 3;
+}
+
+function getDueState(task: Task) {
+  if (!task.due_date || task.status === "done") {
+    return "current";
+  }
+
+  const dueDate = new Date(`${task.due_date.slice(0, 10)}T00:00:00`);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return dueDate < today ? "overdue" : "current";
+}
+
+function getOverdueDays(value: string) {
+  const dueDate = new Date(`${value.slice(0, 10)}T00:00:00`);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.max(1, Math.floor((today.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24)));
+}
+
+function getInitials(name: string) {
+  return name
+    .split(" ")
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
 }

@@ -14,12 +14,13 @@ How to get a Gmail App Password:
   4. Paste the 16-char password in GMAIL_APP_PASSWORD env var
 
 When are emails sent?
-  - task_created  → notify the assignee
-  - task_done     → notify the task creator
+  - task_created  → notify the assignee with the full task details
+  - task_done     → notify the original assigner with the full task details
   - task_assigned → notify the new assignee when a task is reassigned
 """
 
 import smtplib
+from html import escape
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from flask import current_app
@@ -35,11 +36,17 @@ def _send_email(to_address: str, subject: str, html_body: str) -> None:
         subject:    Email subject line
         html_body:  HTML content of the email body
     """
-    sender = current_app.config["GMAIL_SENDER_ADDRESS"]
-    password = current_app.config["GMAIL_APP_PASSWORD"]
+    sender = (current_app.config["GMAIL_SENDER_ADDRESS"] or "").strip()
+    password = (current_app.config["GMAIL_APP_PASSWORD"] or "").replace(" ", "").strip()
 
     if not sender or not password:
-        current_app.logger.warning("Email not configured. Skipping email send.")
+        current_app.logger.error(
+            "Email delivery skipped: GMAIL_SENDER_ADDRESS and "
+            "GMAIL_APP_PASSWORD must both be configured."
+        )
+        return
+    if not to_address or "@" not in to_address:
+        current_app.logger.error("Email delivery skipped: invalid recipient address.")
         return
 
     # MIMEMultipart lets us send both plain-text and HTML versions.
@@ -52,17 +59,69 @@ def _send_email(to_address: str, subject: str, html_body: str) -> None:
     # Attach HTML part
     msg.attach(MIMEText(html_body, "html"))
 
-    # smtplib.SMTP_SSL creates an encrypted connection from the start.
-    # Port 465 is the standard SSL port for Gmail.
+    current_app.logger.info("Sending task email to %s: %s", to_address, subject)
+
+    # Try implicit TLS first, then STARTTLS for networks that block port 465.
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as smtp:
             smtp.login(sender, password)
             smtp.sendmail(sender, to_address, msg.as_string())
-    except (OSError, smtplib.SMTPException) as error:
-        current_app.logger.warning("Email delivery failed: %s", error)
-        return
+    except (OSError, smtplib.SMTPException) as ssl_error:
+        current_app.logger.warning(
+            "Gmail SSL delivery failed; retrying with STARTTLS: %s", ssl_error
+        )
+        try:
+            with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as smtp:
+                smtp.ehlo()
+                smtp.starttls()
+                smtp.ehlo()
+                smtp.login(sender, password)
+                smtp.sendmail(sender, to_address, msg.as_string())
+        except (OSError, smtplib.SMTPException) as starttls_error:
+            current_app.logger.error(
+                "Email delivery failed for %s. SSL error: %s; STARTTLS error: %s",
+                to_address,
+                ssl_error,
+                starttls_error,
+            )
+            return
 
-    current_app.logger.info(f"Email sent to {to_address}: {subject}")
+    current_app.logger.info("Email sent to %s: %s", to_address, subject)
+
+
+def _task_details(task: dict) -> str:
+    """Render the shared task details table used by task notifications."""
+    creator = task.get("creator") or {}
+    assignee = task.get("assignee") or {}
+    due_date = task.get("due_date") or "Not set"
+    return f"""
+        <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
+            <tr>
+                <td style="padding: 9px; font-weight: bold; color: #374151;">Description</td>
+                <td style="padding: 9px; color: #6b7280;">{escape(task.get('description') or 'No description provided.')}</td>
+            </tr>
+            <tr style="background: #f3f4f6;">
+                <td style="padding: 9px; font-weight: bold; color: #374151;">Priority</td>
+                <td style="padding: 9px; color: #6b7280;">{escape(str(task.get('priority', 'medium')).capitalize())}</td>
+            </tr>
+            <tr>
+                <td style="padding: 9px; font-weight: bold; color: #374151;">Due date</td>
+                <td style="padding: 9px; color: #6b7280;">{escape(str(due_date))}</td>
+            </tr>
+            <tr style="background: #f3f4f6;">
+                <td style="padding: 9px; font-weight: bold; color: #374151;">Status</td>
+                <td style="padding: 9px; color: #6b7280;">{escape(str(task.get('status', 'todo')).replace('_', ' ').capitalize())}</td>
+            </tr>
+            <tr>
+                <td style="padding: 9px; font-weight: bold; color: #374151;">Assigned by</td>
+                <td style="padding: 9px; color: #6b7280;">{escape(creator.get('name') or creator.get('email') or 'Workspace member')}</td>
+            </tr>
+            <tr style="background: #f3f4f6;">
+                <td style="padding: 9px; font-weight: bold; color: #374151;">Assigned to</td>
+                <td style="padding: 9px; color: #6b7280;">{escape(assignee.get('name') or assignee.get('email') or 'Unassigned')}</td>
+            </tr>
+        </table>
+    """
 
 
 def notify_task_created(task: dict, assignee_email: str) -> None:
@@ -80,18 +139,8 @@ def notify_task_created(task: dict, assignee_email: str) -> None:
             <h1 style="color: white; margin: 0;">New Task Assigned to You</h1>
         </div>
         <div style="background: #f9fafb; padding: 24px; border-radius: 0 0 8px 8px; border: 1px solid #e5e7eb;">
-            <h2 style="color: #111827;">{task['title']}</h2>
-            <p style="color: #6b7280;">{task.get('description', 'No description provided.')}</p>
-            <table style="width: 100%; border-collapse: collapse; margin-top: 16px;">
-                <tr>
-                    <td style="padding: 8px; font-weight: bold; color: #374151;">Priority:</td>
-                    <td style="padding: 8px; color: #6b7280;">{task.get('priority', 'medium').capitalize()}</td>
-                </tr>
-                <tr style="background: #f3f4f6;">
-                    <td style="padding: 8px; font-weight: bold; color: #374151;">Due Date:</td>
-                    <td style="padding: 8px; color: #6b7280;">{task.get('due_date', 'Not set')}</td>
-                </tr>
-            </table>
+            <h2 style="color: #111827;">{escape(task['title'])}</h2>
+            {_task_details(task)}
             <div style="margin-top: 24px; text-align: center;">
                 <a href="{current_app.config['FRONTEND_URL']}/tasks/{task['id']}"
                    style="background: #4F46E5; color: white; padding: 12px 24px;
@@ -124,8 +173,8 @@ def notify_task_completed(task: dict, creator_email: str) -> None:
         </div>
         <div style="background: #f9fafb; padding: 24px; border-radius: 0 0 8px 8px; border: 1px solid #e5e7eb;">
             <p style="color: #374151;">Great news! The following task has been marked as <strong>completed</strong>:</p>
-            <h2 style="color: #111827;">{task['title']}</h2>
-            <p style="color: #6b7280;">{task.get('description', '')}</p>
+            <h2 style="color: #111827;">{escape(task['title'])}</h2>
+            {_task_details(task)}
             <div style="margin-top: 24px; text-align: center;">
                 <a href="{current_app.config['FRONTEND_URL']}/tasks/{task['id']}"
                    style="background: #10B981; color: white; padding: 12px 24px;
