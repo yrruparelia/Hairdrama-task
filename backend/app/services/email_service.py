@@ -1,17 +1,13 @@
 """
-app/services/email_service.py — Gmail Email Notifications
+app/services/email_service.py — Resend Email Notifications
 
-Why Gmail SMTP with App Password?
-  The Gmail API (OAuth-based) is more secure but requires setting up a
-  service account or an extra OAuth flow just for the backend to send mail.
-  For this project we use Gmail SMTP with an App Password — simpler,
-  well-understood, and works great for low-volume transactional email.
+Resend sends mail through an HTTPS API, which works on hosts that restrict
+outbound SMTP connections.
 
-How to get a Gmail App Password:
-  1. Go to myaccount.google.com → Security
-  2. Enable 2-Step Verification
-  3. Search "App Passwords" → Generate one for "Mail"
-  4. Paste the 16-char password in GMAIL_APP_PASSWORD env var
+Resend setup:
+  1. Create an API key at resend.com/api-keys.
+  2. Verify a sending domain, or use onboarding@resend.dev for testing.
+  3. Set RESEND_API_KEY and RESEND_FROM_EMAIL in the deployment environment.
 
 When are emails sent?
   - task_created  → notify the assignee with the full task details
@@ -19,74 +15,80 @@ When are emails sent?
   - task_assigned → notify the new assignee when a task is reassigned
 """
 
-import smtplib
+import json
 from html import escape
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 from flask import current_app
 
 
 def _send_email(to_address: str, subject: str, html_body: str) -> None:
     """
-    Internal helper. Opens a secure TLS connection to Gmail SMTP
-    and sends a single email.
+    Internal helper. Sends one email through Resend's HTTPS API.
 
     Args:
         to_address: Recipient's email address
         subject:    Email subject line
         html_body:  HTML content of the email body
     """
-    sender = (current_app.config["GMAIL_SENDER_ADDRESS"] or "").strip()
-    password = (current_app.config["GMAIL_APP_PASSWORD"] or "").replace(" ", "").strip()
+    api_key = (current_app.config["RESEND_API_KEY"] or "").strip()
+    sender = (current_app.config["RESEND_FROM_EMAIL"] or "").strip()
 
-    if not sender or not password:
+    if not api_key or not sender:
         current_app.logger.error(
-            "Email delivery skipped: GMAIL_SENDER_ADDRESS and "
-            "GMAIL_APP_PASSWORD must both be configured."
+            "Email delivery skipped: RESEND_API_KEY and "
+            "RESEND_FROM_EMAIL must both be configured."
         )
         return
     if not to_address or "@" not in to_address:
         current_app.logger.error("Email delivery skipped: invalid recipient address.")
         return
 
-    # MIMEMultipart lets us send both plain-text and HTML versions.
-    # Email clients will show the HTML version if supported, plain-text otherwise.
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = sender
-    msg["To"] = to_address
-
-    # Attach HTML part
-    msg.attach(MIMEText(html_body, "html"))
-
     current_app.logger.info("Sending task email to %s: %s", to_address, subject)
-
-    # Try implicit TLS first, then STARTTLS for networks that block port 465.
+    payload = json.dumps(
+        {
+            "from": sender,
+            "to": [to_address],
+            "subject": subject,
+            "html": html_body,
+        }
+    ).encode("utf-8")
+    request = Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as smtp:
-            smtp.login(sender, password)
-            smtp.sendmail(sender, to_address, msg.as_string())
-    except (OSError, smtplib.SMTPException) as ssl_error:
-        current_app.logger.warning(
-            "Gmail SSL delivery failed; retrying with STARTTLS: %s", ssl_error
+        with urlopen(request, timeout=15) as response:
+            response_body = json.loads(response.read().decode("utf-8"))
+    except HTTPError as error:
+        error_body = error.read().decode("utf-8", errors="replace")
+        current_app.logger.error(
+            "Resend rejected email to %s (HTTP %s): %s",
+            to_address,
+            error.code,
+            error_body,
         )
-        try:
-            with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as smtp:
-                smtp.ehlo()
-                smtp.starttls()
-                smtp.ehlo()
-                smtp.login(sender, password)
-                smtp.sendmail(sender, to_address, msg.as_string())
-        except (OSError, smtplib.SMTPException) as starttls_error:
-            current_app.logger.error(
-                "Email delivery failed for %s. SSL error: %s; STARTTLS error: %s",
-                to_address,
-                ssl_error,
-                starttls_error,
-            )
-            return
+        return
+    except URLError as error:
+        current_app.logger.error(
+            "Resend connection failed for %s: %s", to_address, error.reason
+        )
+        return
+    except (TimeoutError, json.JSONDecodeError) as error:
+        current_app.logger.error("Resend email delivery failed for %s: %s", to_address, error)
+        return
 
-    current_app.logger.info("Email sent to %s: %s", to_address, subject)
+    current_app.logger.info(
+        "Email sent to %s via Resend: %s (id=%s)",
+        to_address,
+        subject,
+        response_body.get("id", "unknown"),
+    )
 
 
 def _task_details(task: dict) -> str:
