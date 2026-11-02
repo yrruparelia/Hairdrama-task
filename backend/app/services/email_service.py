@@ -148,7 +148,7 @@ def notify_task_created(task: dict, assignee_email: str) -> None:
             <h2 style="color: #111827;">{escape(task['title'])}</h2>
             {_task_details(task)}
             <div style="margin-top: 24px; text-align: center;">
-                <a href="{current_app.config['FRONTEND_URL']}/tasks/{task['id']}"
+                <a href="{current_app.config['FRONTEND_URL']}/?task={task['id']}"
                    style="background: #4F46E5; color: white; padding: 12px 24px;
                           border-radius: 6px; text-decoration: none; font-weight: bold;">
                     View Task →
@@ -182,7 +182,7 @@ def notify_task_completed(task: dict, creator_email: str) -> None:
             <h2 style="color: #111827;">{escape(task['title'])}</h2>
             {_task_details(task)}
             <div style="margin-top: 24px; text-align: center;">
-                <a href="{current_app.config['FRONTEND_URL']}/tasks/{task['id']}"
+                <a href="{current_app.config['FRONTEND_URL']}/?task={task['id']}"
                    style="background: #10B981; color: white; padding: 12px 24px;
                           border-radius: 6px; text-decoration: none; font-weight: bold;">
                     View Task →
@@ -216,7 +216,7 @@ def notify_task_reassigned(task: dict, new_assignee_email: str) -> None:
             <h2 style="color: #111827;">{task['title']}</h2>
             <p style="color: #6b7280;">{task.get('description', 'No description.')}</p>
             <div style="margin-top: 24px; text-align: center;">
-                <a href="{current_app.config['FRONTEND_URL']}/tasks/{task['id']}"
+                <a href="{current_app.config['FRONTEND_URL']}/?task={task['id']}"
                    style="background: #F59E0B; color: white; padding: 12px 24px;
                           border-radius: 6px; text-decoration: none; font-weight: bold;">
                     View Task →

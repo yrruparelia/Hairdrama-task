@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
+import { useRouter } from "next/router";
 import axios from "axios";
 
 type User = {
@@ -34,6 +35,7 @@ const columns: Array<{ key: Task["status"]; label: string }> = [
 ];
 
 export default function Home() {
+  const router = useRouter();
   const [token, setToken] = useState("");
   const [user, setUser] = useState<User | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -125,6 +127,17 @@ export default function Home() {
     document.documentElement.dataset.theme = darkMode ? "dark" : "light";
     window.localStorage.setItem("hairdrama_theme", darkMode ? "dark" : "light");
   }, [darkMode]);
+
+  useEffect(() => {
+    if (!router.isReady || tasks.length === 0) return;
+    const taskId = typeof router.query.task === "string" ? router.query.task : "";
+    if (!taskId) return;
+
+    document.getElementById(`task-${taskId}`)?.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+  }, [router.isReady, router.query.task, tasks]);
 
   function toggleTheme() {
     setDarkMode((current) => !current);
@@ -311,7 +324,7 @@ export default function Home() {
                   </div>
                 )}
                 {column.tasks.map((task) => (
-                  <article className="task-card" key={task.id}>
+                  <article className="task-card" id={`task-${task.id}`} key={task.id}>
                     <div className="task-card-top">
                       <span className={`priority ${task.priority}`}>{task.priority}</span>
                       {task.due_date && (
