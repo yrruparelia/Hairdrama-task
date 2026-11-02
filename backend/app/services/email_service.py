@@ -21,6 +21,7 @@ from html import escape
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from flask import current_app
+from google.auth.exceptions import GoogleAuthError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -62,8 +63,8 @@ def _send_email(to_address: str, subject: str, html_body: str) -> None:
             token=None,
             refresh_token=refresh_token,
             token_uri="https://oauth2.googleapis.com/token",
-            client_id=current_app.config["GOOGLE_CLIENT_ID"],
-            client_secret=current_app.config["GOOGLE_CLIENT_SECRET"],
+            client_id=current_app.config["GMAIL_CLIENT_ID"],
+            client_secret=current_app.config["GMAIL_CLIENT_SECRET"],
             scopes=["https://www.googleapis.com/auth/gmail.send"],
         )
         credentials.refresh(Request())
@@ -80,7 +81,7 @@ def _send_email(to_address: str, subject: str, html_body: str) -> None:
             to_address, error.resp.status, error.content.decode("utf-8", errors="replace"),
         )
         return
-    except (OSError, ValueError) as error:
+    except (GoogleAuthError, OSError, ValueError) as error:
         current_app.logger.error(
             "Gmail API email delivery failed for %s: %s", to_address, error
         )

@@ -63,3 +63,5 @@ class Config:
     # ── Gmail API email ────────────────────────────────────────────────────
     GMAIL_SENDER_ADDRESS = os.getenv("GMAIL_SENDER_ADDRESS")
     GMAIL_REFRESH_TOKEN = os.getenv("GMAIL_REFRESH_TOKEN")
+    GMAIL_CLIENT_ID = os.getenv("GMAIL_CLIENT_ID", GOOGLE_CLIENT_ID)
+    GMAIL_CLIENT_SECRET = os.getenv("GMAIL_CLIENT_SECRET", GOOGLE_CLIENT_SECRET)
