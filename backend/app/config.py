@@ -60,6 +60,6 @@ class Config:
     # ── Frontend ───────────────────────────────────────────────────────────
     FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
-    # ── Email ──────────────────────────────────────────────────────────────
-    RESEND_API_KEY = os.getenv("RESEND_API_KEY")
-    RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL")
+    # ── Gmail API email ────────────────────────────────────────────────────
+    GMAIL_SENDER_ADDRESS = os.getenv("GMAIL_SENDER_ADDRESS")
+    GMAIL_REFRESH_TOKEN = os.getenv("GMAIL_REFRESH_TOKEN")

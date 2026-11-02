@@ -1,13 +1,14 @@
 """
-app/services/email_service.py — Resend Email Notifications
+app/services/email_service.py — Gmail API Email Notifications
 
-Resend sends mail through an HTTPS API, which works on hosts that restrict
+The Gmail API sends mail over HTTPS, so it works on hosts that restrict
 outbound SMTP connections.
 
-Resend setup:
-  1. Create an API key at resend.com/api-keys.
-  2. Verify a sending domain, or use onboarding@resend.dev for testing.
-  3. Set RESEND_API_KEY and RESEND_FROM_EMAIL in the deployment environment.
+Gmail API setup:
+  1. Enable the Gmail API for the Google Cloud project.
+  2. Create OAuth web credentials with the Gmail send scope.
+  3. Generate a refresh token for the sender account.
+  4. Set GMAIL_SENDER_ADDRESS and GMAIL_REFRESH_TOKEN in the deployment environment.
 
 When are emails sent?
   - task_created  → notify the assignee with the full task details
@@ -15,29 +16,33 @@ When are emails sent?
   - task_assigned → notify the new assignee when a task is reassigned
 """
 
-import json
+import base64
 from html import escape
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from flask import current_app
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 
 def _send_email(to_address: str, subject: str, html_body: str) -> None:
     """
-    Internal helper. Sends one email through Resend's HTTPS API.
+    Internal helper. Sends one email through the Gmail API over HTTPS.
 
     Args:
         to_address: Recipient's email address
         subject:    Email subject line
         html_body:  HTML content of the email body
     """
-    api_key = (current_app.config["RESEND_API_KEY"] or "").strip()
-    sender = (current_app.config["RESEND_FROM_EMAIL"] or "").strip()
+    sender = (current_app.config["GMAIL_SENDER_ADDRESS"] or "").strip()
+    refresh_token = (current_app.config["GMAIL_REFRESH_TOKEN"] or "").strip()
 
-    if not api_key or not sender:
+    if not sender or not refresh_token:
         current_app.logger.error(
-            "Email delivery skipped: RESEND_API_KEY and "
-            "RESEND_FROM_EMAIL must both be configured."
+            "Email delivery skipped: GMAIL_SENDER_ADDRESS and "
+            "GMAIL_REFRESH_TOKEN must both be configured."
         )
         return
     if not to_address or "@" not in to_address:
@@ -45,49 +50,47 @@ def _send_email(to_address: str, subject: str, html_body: str) -> None:
         return
 
     current_app.logger.info("Sending task email to %s: %s", to_address, subject)
-    payload = json.dumps(
-        {
-            "from": sender,
-            "to": [to_address],
-            "subject": subject,
-            "html": html_body,
-        }
-    ).encode("utf-8")
-    request = Request(
-        "https://api.resend.com/emails",
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
+    message = MIMEMultipart("alternative")
+    message["From"] = sender
+    message["To"] = to_address
+    message["Subject"] = subject
+    message.attach(MIMEText(html_body, "html"))
+    raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
+
     try:
-        with urlopen(request, timeout=15) as response:
-            response_body = json.loads(response.read().decode("utf-8"))
-    except HTTPError as error:
-        error_body = error.read().decode("utf-8", errors="replace")
+        credentials = Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=current_app.config["GOOGLE_CLIENT_ID"],
+            client_secret=current_app.config["GOOGLE_CLIENT_SECRET"],
+            scopes=["https://www.googleapis.com/auth/gmail.send"],
+        )
+        credentials.refresh(Request())
+        gmail = build("gmail", "v1", credentials=credentials, cache_discovery=False)
+        response_body = (
+            gmail.users()
+            .messages()
+            .send(userId="me", body={"raw": raw_message})
+            .execute()
+        )
+    except HttpError as error:
         current_app.logger.error(
-            "Resend rejected email to %s (HTTP %s): %s",
-            to_address,
-            error.code,
-            error_body,
+            "Gmail API rejected email to %s (HTTP %s): %s",
+            to_address, error.resp.status, error.content.decode("utf-8", errors="replace"),
         )
         return
-    except URLError as error:
+    except (OSError, ValueError) as error:
         current_app.logger.error(
-            "Resend connection failed for %s: %s", to_address, error.reason
+            "Gmail API email delivery failed for %s: %s", to_address, error
         )
-        return
-    except (TimeoutError, json.JSONDecodeError) as error:
-        current_app.logger.error("Resend email delivery failed for %s: %s", to_address, error)
         return
 
     current_app.logger.info(
-        "Email sent to %s via Resend: %s (id=%s)",
+        "Email sent to %s via Gmail API: %s (id=%s)",
         to_address,
         subject,
-        response_body.get("id", "unknown"),
+        response_body.get("id", "unknown")
     )
 
 
