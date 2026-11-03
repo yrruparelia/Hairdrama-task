@@ -1,30 +1,9 @@
-"""
-app/routes/tasks.py — Task CRUD Routes
-
-Endpoints:
-  GET    /api/tasks/          → list all tasks (with optional filters)
-  POST   /api/tasks/          → create a new task
-  GET    /api/tasks/<id>      → get a single task with comments
-  PATCH  /api/tasks/<id>      → update task (status, assignee, etc.)
-  DELETE /api/tasks/<id>      → delete a task
-
-Email triggers:
-  - Task created + assigned_to set  → email the assignee
-  - Task status changed to 'done'   → email the creator
-  - Task reassigned (assigned_to changes) → email new assignee
-
-Activity Logging:
-  Every mutation (create / update / delete) writes a record to
-  activity_logs so we have a full audit trail.
-
-JWT Auth:
-  Every route uses _decode_jwt() to extract the current user's ID
-  from the Authorization header.
-"""
+"""Task CRUD, comments, activity logging, and notifications."""
 
 
 import jwt
 import datetime
+from typing import Any, cast
 from flask import Blueprint, jsonify, request, current_app
 from app.services.supabase_client import get_supabase_client
 from app.services.email_service import (
@@ -37,12 +16,9 @@ from app.services.email_service import (
 tasks_bp = Blueprint("tasks", __name__)
 
 
-# ── JWT Decode Helper ─────────────────────────────────────────────────────────
-def _decode_jwt(req):
-    """
-    Shared JWT verification helper used across all protected routes.
-    Returns the decoded payload dict, or a (response, status_code) tuple on error.
-    """
+# Shared JWT validation.
+def _decode_jwt(req: Any) -> dict[str, Any] | tuple[Any, int]:
+    """Return the decoded payload or an error response."""
     auth_header = req.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         return jsonify({"error": "Unauthorized"}), 401
@@ -60,23 +36,26 @@ def _decode_jwt(req):
         return jsonify({"error": "Invalid token"}), 401
 
 
-def _log_activity(supabase, task_id: str, user_id: str, action_type: str, meta: dict = {}):
-    """
-    Write an entry to activity_logs.
-    Fails silently — we don't want a logging error to break the main request.
-    """
+def _log_activity(
+    supabase: Any,
+    task_id: str,
+    user_id: str,
+    action_type: str,
+    meta: dict[str, Any] | None = None,
+):
+    """Write an activity log entry without interrupting the request."""
     try:
         supabase.table("activity_logs").insert({
             "task_id": task_id,
             "user_id": user_id,
             "action_type": action_type,
-            "meta": meta,
+            "meta": meta or {},
         }).execute()
     except Exception as e:
         current_app.logger.error(f"Failed to write activity log: {e}")
 
 
-def _get_task_with_relations(supabase, task_id: str):
+def _get_task_with_relations(supabase: Any, task_id: str) -> dict[str, Any]:
     """Fetch a task in the same shape used by the task list endpoint."""
     result = (
         supabase.table("tasks")
@@ -89,27 +68,19 @@ def _get_task_with_relations(supabase, task_id: str):
         .single()
         .execute()
     )
-    return result.data
+    return cast(dict[str, Any], result.data)
 
 
-# ── GET /api/tasks/ ───────────────────────────────────────────────────────────
+# List tasks.
 @tasks_bp.get("/")
 def list_tasks():
-    """
-    Returns tasks with optional query param filters:
-      ?status=todo|in_progress|done
-      ?priority=low|medium|high
-      ?assigned_to=<user_uuid>
-
-    Joins with users table to get creator/assignee names for display.
-    """
+    """Return tasks visible to the authenticated user."""
     payload = _decode_jwt(request)
     if isinstance(payload, tuple):
         return payload
 
     supabase = get_supabase_client()
 
-    # Build query with foreign key joins (Supabase PostgREST syntax)
     query = (
         supabase.table("tasks")
         .select(
@@ -120,7 +91,6 @@ def list_tasks():
         .order("created_at", desc=True)
     )
 
-    # Apply optional filters from query params
     status = request.args.get("status")
     priority = request.args.get("priority")
     assigned_to = request.args.get("assigned_to")
@@ -133,28 +103,25 @@ def list_tasks():
         query = query.eq("assigned_to", assigned_to)
 
     result = query.execute()
+    tasks = cast(list[dict[str, Any]], result.data)
     visible_tasks = [
-        task for task in result.data
+        task for task in tasks
         if task.get("created_by") == payload["sub"]
         or task.get("assigned_to") == payload["sub"]
     ]
     return jsonify(visible_tasks), 200
 
 
-# ── POST /api/tasks/ ──────────────────────────────────────────────────────────
+# Create a task.
 @tasks_bp.post("/")
 def create_task():
-    """
-    Creates a new task. Required fields: title.
-    Optional: description, priority, due_date, assigned_to.
-    Triggers: email notification to assignee if assigned_to is set.
-    """
+    """Create a task and notify an assigned user."""
     payload = _decode_jwt(request)
     if isinstance(payload, tuple):
         return payload
 
     data = request.get_json()
-    if not data or not data.get("title"):
+    if not isinstance(data, dict) or not data.get("title"):
         return jsonify({"error": "title is required"}), 400
 
     due_date = data.get("due_date")
@@ -188,17 +155,15 @@ def create_task():
             .maybe_single()
             .execute()
         )
-        if not assignee_exists.data:
+        if not assignee_exists or not assignee_exists.data:
             return jsonify({"error": "Assigned user not found"}), 400
 
     result = supabase.table("tasks").insert(new_task).execute()
-    task = result.data[0]
+    task = cast(dict[str, Any], result.data[0])
     task = _get_task_with_relations(supabase, task["id"])
 
-    # Log the creation action
     _log_activity(supabase, task["id"], current_user_id, "task_created")
 
-    # If a user was assigned, fetch their email and send notification
     if task.get("assigned_to"):
         assignee = (
             supabase.table("users")
@@ -207,18 +172,17 @@ def create_task():
             .single()
             .execute()
         )
-        if assignee.data:
-            notify_task_created(task, assignee.data["email"])
+        assignee_data = cast(dict[str, Any], assignee.data)
+        if assignee_data:
+            notify_task_created(task, str(assignee_data["email"]))
 
     return jsonify(task), 201
 
 
-# ── GET /api/tasks/<task_id> ──────────────────────────────────────────────────
+# Get one task.
 @tasks_bp.get("/<task_id>")
 def get_task(task_id: str):
-    """
-    Returns a single task with its comments and activity log.
-    """
+    """Return a task with comments and activity history."""
     payload = _decode_jwt(request)
     if isinstance(payload, tuple):
         return payload
@@ -237,10 +201,9 @@ def get_task(task_id: str):
         .execute()
     )
 
-    if not task_result.data:
+    if not isinstance(task_result.data, dict):
         return jsonify({"error": "Task not found"}), 404
 
-    # Fetch comments for this task
     comments_result = (
         supabase.table("task_comments")
         .select("*, author:user_id(id, name, avatar_url)")
@@ -249,7 +212,6 @@ def get_task(task_id: str):
         .execute()
     )
 
-    # Fetch activity log for this task
     logs_result = (
         supabase.table("activity_logs")
         .select("*, actor:user_id(id, name, avatar_url)")
@@ -259,7 +221,7 @@ def get_task(task_id: str):
     )
 
     response = {
-        **task_result.data,
+        **cast(dict[str, Any], task_result.data),
         "comments": comments_result.data,
         "activity_logs": logs_result.data,
     }
@@ -267,36 +229,29 @@ def get_task(task_id: str):
     return jsonify(response), 200
 
 
-# ── PATCH /api/tasks/<task_id> ────────────────────────────────────────────────
+# Update a task.
 @tasks_bp.patch("/<task_id>")
 def update_task(task_id: str):
-    """
-    Partial update of a task. Detects:
-      - Status change to 'done'     → email creator
-      - assigned_to change          → email new assignee
-    Logs all changes to activity_logs.
-    """
+    """Update allowed task fields and process notifications."""
     payload = _decode_jwt(request)
     if isinstance(payload, tuple):
         return payload
 
     data = request.get_json()
-    if not data:
+    if not isinstance(data, dict):
         return jsonify({"error": "No data provided"}), 400
 
     supabase = get_supabase_client()
     current_user_id = payload["sub"]
 
-    # Fetch the current state before updating (needed to detect changes)
     old_task_result = (
         supabase.table("tasks").select("*").eq("id", task_id).single().execute()
     )
     if not old_task_result.data:
         return jsonify({"error": "Task not found"}), 404
 
-    old_task = old_task_result.data
+    old_task = cast(dict[str, Any], old_task_result.data)
 
-    # Only update allowed fields (whitelist approach for security)
     allowed_fields = {"title", "description", "status", "priority", "due_date", "assigned_to"}
     update_data = {k: v for k, v in data.items() if k in allowed_fields}
 
@@ -321,23 +276,21 @@ def update_task(task_id: str):
     result = (
         supabase.table("tasks").update(update_data).eq("id", task_id).execute()
     )
-    updated_task = result.data[0]
+    updated_task = cast(dict[str, Any], result.data[0])
     updated_task = _get_task_with_relations(supabase, updated_task["id"])
 
-    # ── Detect and handle status change to 'done' ──────────────────────────
     if update_data.get("status") == "done" and old_task["status"] != "done":
         _log_activity(
             supabase, task_id, current_user_id, "status_changed",
             {"old_status": old_task["status"], "new_status": "done"}
         )
-        # Notify the task creator
         creator = (
             supabase.table("users").select("email").eq("id", old_task["created_by"]).single().execute()
         )
-        if creator.data:
-            notify_task_completed(updated_task, creator.data["email"])
+        creator_data = cast(dict[str, Any], creator.data)
+        if creator_data:
+            notify_task_completed(updated_task, str(creator_data["email"]))
 
-    # ── Detect reassignment ────────────────────────────────────────────────
     new_assignee_id = update_data.get("assigned_to")
     if new_assignee_id and new_assignee_id != old_task.get("assigned_to"):
         _log_activity(
@@ -347,18 +300,17 @@ def update_task(task_id: str):
         new_assignee = (
             supabase.table("users").select("email").eq("id", new_assignee_id).single().execute()
         )
-        if new_assignee.data:
-            notify_task_reassigned(updated_task, new_assignee.data["email"])
+        new_assignee_data = cast(dict[str, Any], new_assignee.data)
+        if new_assignee_data:
+            notify_task_reassigned(updated_task, str(new_assignee_data["email"]))
 
     return jsonify(updated_task), 200
 
 
-# ── DELETE /api/tasks/<task_id> ───────────────────────────────────────────────
+# Delete a task.
 @tasks_bp.delete("/<task_id>")
 def delete_task(task_id: str):
-    """
-    Deletes a task. Only the task creator can delete it.
-    """
+    """Delete a task owned by the authenticated user."""
     payload = _decode_jwt(request)
     if isinstance(payload, tuple):
         return payload
@@ -366,33 +318,30 @@ def delete_task(task_id: str):
     supabase = get_supabase_client()
     current_user_id = payload["sub"]
 
-    # Authorization check: only the creator can delete
     task_result = (
         supabase.table("tasks").select("created_by").eq("id", task_id).single().execute()
     )
-    if not task_result.data:
+    if not isinstance(task_result.data, dict):
         return jsonify({"error": "Task not found"}), 404
 
-    if task_result.data["created_by"] != current_user_id:
+    task = cast(dict[str, Any], task_result.data)
+    if task["created_by"] != current_user_id:
         return jsonify({"error": "Forbidden: only the task creator can delete it"}), 403
 
     supabase.table("tasks").delete().eq("id", task_id).execute()
     return jsonify({"message": "Task deleted successfully"}), 200
 
 
-# ── POST /api/tasks/<task_id>/comments ────────────────────────────────────────
+# Add a comment.
 @tasks_bp.post("/<task_id>/comments")
 def add_comment(task_id: str):
-    """
-    Adds a comment to a task.
-    Required body field: content
-    """
+    """Add a comment to a task."""
     payload = _decode_jwt(request)
     if isinstance(payload, tuple):
         return payload
 
     data = request.get_json()
-    if not data or not data.get("content"):
+    if not isinstance(data, dict) or not data.get("content"):
         return jsonify({"error": "content is required"}), 400
 
     supabase = get_supabase_client()

@@ -1,20 +1,4 @@
-"""
-app/services/email_service.py — Gmail API Email Notifications
-
-The Gmail API sends mail over HTTPS, so it works on hosts that restrict
-outbound SMTP connections.
-
-Gmail API setup:
-  1. Enable the Gmail API for the Google Cloud project.
-  2. Create OAuth web credentials with the Gmail send scope.
-  3. Generate a refresh token for the sender account.
-  4. Set GMAIL_SENDER_ADDRESS and GMAIL_REFRESH_TOKEN in the deployment environment.
-
-When are emails sent?
-  - task_created  → notify the assignee with the full task details
-  - task_done     → notify the original assigner with the full task details
-  - task_assigned → notify the new assignee when a task is reassigned
-"""
+"""Gmail notification helpers for task events."""
 
 import base64
 from html import escape
@@ -29,14 +13,7 @@ from googleapiclient.errors import HttpError
 
 
 def _send_email(to_address: str, subject: str, html_body: str) -> None:
-    """
-    Internal helper. Sends one email through the Gmail API over HTTPS.
-
-    Args:
-        to_address: Recipient's email address
-        subject:    Email subject line
-        html_body:  HTML content of the email body
-    """
+    """Send one HTML email through Gmail."""
     sender = (current_app.config["GMAIL_SENDER_ADDRESS"] or "").strip()
     refresh_token = (current_app.config["GMAIL_REFRESH_TOKEN"] or "").strip()
 
@@ -131,13 +108,7 @@ def _task_details(task: dict) -> str:
 
 
 def notify_task_created(task: dict, assignee_email: str) -> None:
-    """
-    Sends an email to the assignee when a new task is created and assigned to them.
-
-    Args:
-        task:           The newly created task dict (from Supabase)
-        assignee_email: Email address of the person being assigned the task
-    """
+    """Notify an assignee about a newly created task."""
     subject = f"📋 New Task Assigned: {task['title']}"
     html_body = f"""
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -164,13 +135,7 @@ def notify_task_created(task: dict, assignee_email: str) -> None:
 
 
 def notify_task_completed(task: dict, creator_email: str) -> None:
-    """
-    Sends an email to the task creator when a task is marked as done.
-
-    Args:
-        task:          The completed task dict
-        creator_email: Email of the person who originally created the task
-    """
+    """Notify the creator when a task is completed."""
     subject = f"✅ Task Completed: {task['title']}"
     html_body = f"""
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -198,13 +163,7 @@ def notify_task_completed(task: dict, creator_email: str) -> None:
 
 
 def notify_task_reassigned(task: dict, new_assignee_email: str) -> None:
-    """
-    Sends an email when a task is reassigned to a new user.
-
-    Args:
-        task:               The updated task dict
-        new_assignee_email: Email of the new assignee
-    """
+    """Notify the new assignee when a task is reassigned."""
     subject = f"🔄 Task Reassigned to You: {task['title']}"
     html_body = f"""
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
